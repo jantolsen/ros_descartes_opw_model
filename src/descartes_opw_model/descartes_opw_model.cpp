@@ -66,31 +66,33 @@ bool descartes_opw_model::OPWMoveitStateAdapter::initialize(const std::string &r
   return computeIKFastTransforms();
 }
 
-bool descartes_opw_model::OPWMoveitStateAdapter::getAllIK(const Eigen::Affine3d &pose,
+bool descartes_opw_model::OPWMoveitStateAdapter::getAllIK(const Eigen::Isometry3d &pose,
                                                           std::vector<std::vector<double>> &joint_poses) const
 {
   joint_poses.clear();
 
   // Transform input pose
-  Eigen::Affine3d tool_pose = world_to_base_.frame_inv * pose * tool0_to_tip_.frame;
+  Eigen::Isometry3d tool_pose = world_to_base_.frame_inv * pose * tool0_to_tip_.frame;
 
-  std::array<double, 6*8> sols;
-  opw_kinematics::inverse(kin_params_, tool_pose, sols.data());
+  opw_kinematics::Solutions<double> sols;
+  sols = opw_kinematics::inverse(kin_params_, tool_pose);
 
   // Check the output
   std::vector<double> tmp (6); // temporary storage for API reasons
-  for (int i = 0; i < 8; i++)
+  for (auto sol : sols)
   {
-    double* sol = sols.data() + 6 * i;
     if (opw_kinematics::isValid(sol))
     {
       opw_kinematics::harmonizeTowardZero(sol);
 
       // TODO: make this better...
-      std::copy(sol, sol + 6, tmp.data());
+      std::copy(sol.begin(), sol.end(), tmp.begin());
       if (isValid(tmp))
       {
-        joint_poses.push_back(tmp);
+        if(!isInCollision(tmp))
+        {
+          joint_poses.push_back(tmp);
+        }
       }
     }
   }
@@ -98,7 +100,7 @@ bool descartes_opw_model::OPWMoveitStateAdapter::getAllIK(const Eigen::Affine3d 
   return joint_poses.size() > 0;
 }
 
-bool descartes_opw_model::OPWMoveitStateAdapter::getIK(const Eigen::Affine3d &pose,
+bool descartes_opw_model::OPWMoveitStateAdapter::getIK(const Eigen::Isometry3d &pose,
                                                        const std::vector<double> &seed_state,
                                                        std::vector<double> &joint_pose) const
 {
@@ -112,12 +114,16 @@ bool descartes_opw_model::OPWMoveitStateAdapter::getIK(const Eigen::Affine3d &po
 }
 
 bool descartes_opw_model::OPWMoveitStateAdapter::getFK(const std::vector<double> &joint_pose,
-                                                       Eigen::Affine3d &pose) const
+                                                       Eigen::Isometry3d &pose) const
 {
   if (!isValid(joint_pose)) // TODO: Why is this a thing?
     return false;
 
-  pose = opw_kinematics::forward<double>(kin_params_, joint_pose.data());
+  // Convert std::vector to std::array
+  std::array<double, 6> joint_values;
+  std::copy(joint_pose.begin(), joint_pose.end(), joint_values.begin());
+
+  pose = opw_kinematics::forward<double>(kin_params_, joint_values);
   pose = world_to_base_.frame * pose * tool0_to_tip_.frame_inv;
   return true;
 }
@@ -133,14 +139,14 @@ bool descartes_opw_model::OPWMoveitStateAdapter::computeIKFastTransforms()
   // look up the IKFast base and tool frame
   if (!robot_state_->knowsFrameTransform(kin_base_frame_))
   {
-    logError("IkFastMoveitStateAdapter: Cannot find transformation to frame '%s' in group '%s'.",
+    ROS_ERROR("IkFastMoveitStateAdapter: Cannot find transformation to frame '%s' in group '%s'.",
              kin_base_frame_.c_str(), group_name_.c_str());
     return false;
   }
 
   if (!robot_state_->knowsFrameTransform(kin_tool_frame_))
   {
-    logError("IkFastMoveitStateAdapter: Cannot find transformation to frame '%s' in group '%s'.",
+    ROS_ERROR("IkFastMoveitStateAdapter: Cannot find transformation to frame '%s' in group '%s'.",
              kin_tool_frame_.c_str(), group_name_.c_str());
     return false;
   }
